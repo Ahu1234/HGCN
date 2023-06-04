@@ -88,44 +88,7 @@ class SLIC(object):
         self.data = np.reshape(data, [height, width, bands])
         self.labels = labels
 
-    def get_Q_and_S_and_Segments(self):
-      
-        img = self.data
-        (h, w, d) = img.shape
-        img = np.double(img)
-        
-        segments = slic(img, n_segments=self.n_segments, compactness=self.compactness, max_iter=self.max_iter,
-                        convert2lab=False, sigma=self.sigma, enforce_connectivity=True,
-                        min_size_factor=self.min_size_factor, max_size_factor=self.max_size_factor, slic_zero=False)
-       
-        if segments.max() + 1 != len(list(set(np.reshape(segments, [-1]).tolist()))): segments = SegmentsLabelProcess(
-            segments)
-        self.segments = segments
-        superpixel_count = segments.max() + 1
-        self.superpixel_count = superpixel_count
-        print("superpixel_count", superpixel_count)
-       
-        out = mark_boundaries(img[:, :, [0, 1, 2]], segments)
-        plt.figure()
-        plt.imshow(out)
-        #plt.show()
-        # out = (img[:, :, [0, 1, 2]]-np.min(img[:, :, [0, 1, 2]]))/(np.max(img[:, :, [0, 1, 2]])-np.min(img[:, :, [0, 1, 2]]))
-        segments = np.reshape(segments, [-1])
-        S = np.zeros([superpixel_count, d], dtype=np.float32)
-        Q = np.zeros([w * h, superpixel_count], dtype=np.float32)
-        x = np.reshape(img, [-1, d])
-        for i in range(superpixel_count):
-            idx = np.where(segments == i)[0]
-            count = len(idx)
-            pixels = x[idx]
-            superpixel = np.sum(pixels, 0) / count
-            S[i] = superpixel
-            Q[idx, i] = 1
-        self.S = S
-        self.Q = Q
-
-        return Q, S, self.segments
-
+    
 
 
 
@@ -183,20 +146,7 @@ def hyperedge_concat(*H_list):
 
 
 
-def load_feature_construct_H(cnn_ft,
-        m_prob=1,
-        K_neigs=[8],
-        is_probH=True,
-        split_diff_scale=False, ):
-    mvcnn_ft = cnn_ft
-    fts = None
-    fts = feature_concat(fts, mvcnn_ft)
-    H = None
-    tmp = construct_H_with_KNN(fts, K_neigs=K_neigs,
-                               split_diff_scale=split_diff_scale,
-                               is_probH=is_probH, m_prob=m_prob)
-    H = hyperedge_concat(H, tmp)
-    return fts, H
+
 
 
 

@@ -128,53 +128,6 @@ class SLIC(object):
 
 
 
-class LDA_SLIC(object):
-    def __init__(self, data, labels, n_component):
-        self.data = data
-        self.init_labels = labels
-        self.curr_data = data
-        self.n_component = n_component
-        self.height, self.width, self.bands = data.shape
-        self.x_flatt = np.reshape(data, [self.width * self.height, self.bands])
-        self.y_flatt = np.reshape(labels, [self.height * self.width])
-        self.labes = labels
-
-    def SLIC_Process(self, img, scale=25):
-        n_segments_init = self.height * self.width / scale
-        print("n_segments_init", n_segments_init)
-        myslic = SLIC(img, n_segments=n_segments_init, labels=self.labes, compactness=1, sigma=1, min_size_factor=0.1,
-                      max_size_factor=2)
-        Q, S, Segments = myslic.get_Q_and_S_and_Segments()
-
-        return Q, S, Segments
-
-    def simple_superpixel_PCA(self, scale):
-        pca = PCA(n_components=k)
-        X=np.reshape(self.data, [self.height*self.width,self.bands])
-        X = pca.fit(X).transform(X)
-        X=np.reshape(X,[self.height, self.width, -1])
-        Q, S, Seg = self.SLIC_Process(X, scale=scale)
-        return Q, S, Seg
-    
-    def simple_superpixel_LDA(self, scale):
-        LDA=LinearDiscriminantAnalysis(n_components=16)
-        X=np.reshape(self.data, [self.height*self.width,self.bands])
-        X = LDA.fit(X,self.y_flatt).transform(X)
-        X=np.reshape(X,[self.height, self.width, -1])
-        Q, S, Seg = self.SLIC_Process(X, scale=scale)
-        return Q, S, Seg
-    
-    def simple_superpixel_tSNE(self, scale):
-        tsne = manifold.TSNE(n_components=15, init='pca', random_state=0)
-        X=np.reshape(self.data, [self.height*self.width,self.bands])
-        X = tsne.fit_transform(X)
-        X=np.reshape(X,[self.height, self.width, -1])
-        Q, S, Seg = self.SLIC_Process(X, scale=scale)
-        return Q, S, Seg
-        
-    def simple_superpixel_no_LDA(self, scale):
-        Q, S, Seg = self.SLIC_Process(self.data, scale=scale)
-        return Q, S, Seg
 
 def Eu_dis(x):
 
@@ -228,75 +181,6 @@ def hyperedge_concat(*H_list):
     return H
 
 
-def generate_G_from_H(H, variable_weight=False):
-   
-    if type(H) != list:
-        
-        return _generate_G_from_H(H)
-        
-    else:
-        G = []
-        for sub_H in H:
-            G.append(generate_G_from_H(sub_H))
-        return G
-
-
-def _generate_G_from_H(H):  
-    H = np.array(H)
-    n_edge = H.shape[1]
-    W = np.ones(n_edge)
-    DV = np.sum(H * W, axis=1)
-    DE = np.sum(H, axis=0)
-    invDE = np.mat(np.diag(np.power(DE, -1)))
-    DV2 = np.mat(np.diag(np.power(DV, -0.5)))
-    DV1 = np.mat(np.diag(np.power(DV, -1)))
-    W = np.mat(np.diag(W))
-    H = np.mat(H)
-    HT = H.T
-    G= DV1 * H * W * invDE * HT 
-    return G
-
-
-def construct_H_with_KNN_from_distance(dis_mat, k_neig, is_probH=False, m_prob=1):
- 
-    n_obj = dis_mat.shape[0]
-    n_edge = n_obj
-    H = np.zeros((n_obj, n_edge))
-    for center_idx in range(n_obj):
-        dis_mat[center_idx, center_idx] = 0
-        dis_vec = dis_mat[center_idx]
-        dis_vec=dis_vec.T
-        nearest_idx = np.array(np.argsort(dis_vec)).squeeze()
-        avg_dis = np.average(dis_vec)
-        if not np.any(nearest_idx[:k_neig] == center_idx):
-            nearest_idx[k_neig - 1] = center_idx
-
-        for node_idx in nearest_idx[:k_neig]:
-            if is_probH:
-                H[node_idx, center_idx] = np.exp(-dis_vec[0, node_idx] ** 2 / (m_prob * avg_dis) ** 2)
-            else:
-                H[node_idx, center_idx] = 1.0
-    return H
-
-
-
-def construct_H_with_KNN(X, K_neigs, split_diff_scale=False, is_probH=True, m_prob=1):
-
-    if len(X.shape) != 2:
-        X = X.reshape(-1, X.shape[-1])
-
-    if type(K_neigs) == int:
-        K_neigs = [K_neigs]
-    dis_mat = Eu_dis(X)
-
-    H = []
-    for k_neig in K_neigs:
-        H_tmp = construct_H_with_KNN_from_distance(dis_mat, k_neig, is_probH, m_prob)
-        if not split_diff_scale:
-            H = hyperedge_concat(H, H_tmp)
-        else:
-            H.append(H_tmp)
-    return H
 
 
 def load_feature_construct_H(cnn_ft,

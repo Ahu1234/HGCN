@@ -189,14 +189,7 @@ def Eu_dis(x):
     return dist_mat
 
 def feature_concat(*F_list, normal_col=False):
-    """
-    Concatenate multiple modality feature. If the dimension of a feature matrix is more than two,
-    the function will reduce it into two dimension(using the last dimension as the feature dimension,
-    the other dimension will be fused as the object dimension)
-    :param F_list: Feature matrix list
-    :param normal_col: normalize each column of the feature
-    :return: Fused feature matrix
-    """
+   
     features = None
     for f in F_list:
         if f is not None and type(f) != list:
@@ -549,65 +542,4 @@ for (FLAG, curr_train_ratio, Scale) in [(1, 0.05,150)]:
         pass
     ###########
    
-    torch.cuda.empty_cache()
-    for curr_seed in Seed_List:
-        lr = 0.001
-        nepochs=300
-        print(fts.shape)
-        print(G.shape)
-        model =HGNN(fts.shape[1],class_count,32,Q=Q,dropout=0)
-        model = model.to(device)
-       
-  
-        adam = torch.optim.Adam(model.parameters(), lr=lr)
-        optimizer =adam
-       
-        schedular =  torch.optim.lr_scheduler.MultiStepLR(optimizer,milestones=[100], gamma=0.9)
-        print("Model Summary:")
-        print(model)
-        print('----------------------')
-     
-        model.train()
-        criterion = torch.nn.CrossEntropyLoss()
-        for i in range(nepochs):
-            schedular.step()
-            model.train()
-            optimizer.zero_grad()
-            output= model(fts,G)
-            _, preds = torch.max(output[idx_train], 1)
-            loss = criterion(output[idx_train], labels[idx_train])
-            loss.backward()
-            optimizer.step()
-            with torch.no_grad():
-                model.eval()
-                OUTPUT = model(fts, G)
-                _, pred = torch.max(OUTPUT, 1)
-                preds=pred[idx_train]
-                trainloss = criterion(output[idx_train], labels[idx_train])
-                trainOA,_,_,_ =accuracy_eval1(labels[idx_train], preds)  
-                print("{}\tloss={}\t train OA={}".format(str(i + 1), trainloss, trainOA))
-                torch.save(model.state_dict(), "model\\best_model.pt")
-            torch.cuda.empty_cache()
-        
-        testOA,testAA,testKappa,testcm =accuracy_eval1(labels[idx_train], preds) 
-        cm1=np.diag(testcm)/testcm.sum(axis=0)#OA
-        file_name = 'classification'+dataset_name+'-150.txt'
-        with open(file_name, 'a') as x_file:
-            x_file.write('\n') 
-            #x_file.write('{}'.format(cm))
-            x_file.write('\n')
-            x_file.write('{} Overall accuracy (%)'.format(testOA*100))
-            x_file.write('\n')
-            x_file.write('{} Average accuracy (%)'.format(testAA*100))
-            x_file.write('\n')
-            x_file.write('{} Kappa accuracy (%)'.format(testKappa*100))
-            x_file.write('\n')      
-            x_file.write('\n')
-            x_file.write('{}'.format(cm1*100))
-        pred=pred+1
-        pred[background_idx]=0
-        y=DrawResult(pred,FLAG)
-        #plt.imsave('HGCN'+dataset_name+ repr(int(testOA*10000))+'.png', y)
-        torch.cuda.empty_cache()
-        del model
 

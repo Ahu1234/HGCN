@@ -25,7 +25,6 @@ def accuracy_eval1(label_tr, label_pred):
     cm = metrics.confusion_matrix(label_tr, label_pred)
     return overall_accuracy, avarage_accuracy, kappa,cm
 
-
 def LSC_superpixel(I, nseg):
     superpixelNum = nseg
     ratio = 0.075
@@ -38,7 +37,6 @@ def LSC_superpixel(I, nseg):
     superpixelLSC.enforceLabelConnectivity(min_element_size=25)
     segments = superpixelLSC.getLabels()
     return np.array(segments, np.int64)
-
 
 def SEEDS_superpixel(I, nseg):
     I = np.array(I[:, :, 0:3], np.float32).copy()
@@ -53,7 +51,6 @@ def SEEDS_superpixel(I, nseg):
     segments = seeds.getLabels()
   
     return segments
-
 
 def SegmentsLabelProcess(labels):
     
@@ -88,9 +85,91 @@ class SLIC(object):
         self.data = np.reshape(data, [height, width, bands])
         self.labels = labels
 
+    def get_Q_and_S_and_Segments(self):
+      
+        img = self.data
+        (h, w, d) = img.shape
+        img = np.double(img)
+        
+        segments = slic(img, n_segments=self.n_segments, compactness=self.compactness, max_iter=self.max_iter,
+                        convert2lab=False, sigma=self.sigma, enforce_connectivity=True,
+                        min_size_factor=self.min_size_factor, max_size_factor=self.max_size_factor, slic_zero=False)
+       
+        if segments.max() + 1 != len(list(set(np.reshape(segments, [-1]).tolist()))): segments = SegmentsLabelProcess(
+            segments)
+        self.segments = segments
+        superpixel_count = segments.max() + 1
+        self.superpixel_count = superpixel_count
+        print("superpixel_count", superpixel_count)
+       
+        out = mark_boundaries(img[:, :, [0, 1, 2]], segments)
+        plt.figure()
+        plt.imshow(out)
+        #plt.show()
+        # out = (img[:, :, [0, 1, 2]]-np.min(img[:, :, [0, 1, 2]]))/(np.max(img[:, :, [0, 1, 2]])-np.min(img[:, :, [0, 1, 2]]))
+        segments = np.reshape(segments, [-1])
+        S = np.zeros([superpixel_count, d], dtype=np.float32)
+        Q = np.zeros([w * h, superpixel_count], dtype=np.float32)
+        x = np.reshape(img, [-1, d])
+        for i in range(superpixel_count):
+            idx = np.where(segments == i)[0]
+            count = len(idx)
+            pixels = x[idx]
+            superpixel = np.sum(pixels, 0) / count
+            S[i] = superpixel
+            Q[idx, i] = 1
+        self.S = S
+        self.Q = Q
+
+        return Q, S, self.segments
+        
+class LDA_SLIC(object):
+    def __init__(self, data, labels, n_component):
+        self.data = data
+        self.init_labels = labels
+        self.curr_data = data
+        self.n_component = n_component
+        self.height, self.width, self.bands = data.shape
+        self.x_flatt = np.reshape(data, [self.width * self.height, self.bands])
+        self.y_flatt = np.reshape(labels, [self.height * self.width])
+        self.labes = labels
+
+    def SLIC_Process(self, img, scale=25):
+        n_segments_init = self.height * self.width / scale
+        print("n_segments_init", n_segments_init)
+        myslic = SLIC(img, n_segments=n_segments_init, labels=self.labes, compactness=1, sigma=1, min_size_factor=0.1,
+                      max_size_factor=2)
+        Q, S, Segments = myslic.get_Q_and_S_and_Segments()
+
+        return Q, S, Segments
+
+    def simple_superpixel_PCA(self, scale):
+        pca = PCA(n_components=k)
+        X=np.reshape(self.data, [self.height*self.width,self.bands])
+        X = pca.fit(X).transform(X)
+        X=np.reshape(X,[self.height, self.width, -1])
+        Q, S, Seg = self.SLIC_Process(X, scale=scale)
+        return Q, S, Seg
     
-
-
+    def simple_superpixel_LDA(self, scale):
+        LDA=LinearDiscriminantAnalysis(n_components=16)
+        X=np.reshape(self.data, [self.height*self.width,self.bands])
+        X = LDA.fit(X,self.y_flatt).transform(X)
+        X=np.reshape(X,[self.height, self.width, -1])
+        Q, S, Seg = self.SLIC_Process(X, scale=scale)
+        return Q, S, Seg
+    
+    def simple_superpixel_tSNE(self, scale):
+        tsne = manifold.TSNE(n_components=15, init='pca', random_state=0)
+        X=np.reshape(self.data, [self.height*self.width,self.bands])
+        X = tsne.fit_transform(X)
+        X=np.reshape(X,[self.height, self.width, -1])
+        Q, S, Seg = self.SLIC_Process(X, scale=scale)
+        return Q, S, Seg
+        
+    def simple_superpixel_no_LDA(self, scale):
+        Q, S, Seg = self.SLIC_Process(self.data, scale=scale)
+        return Q, S, Seg
 
 def Eu_dis(x):
 
@@ -105,7 +184,14 @@ def Eu_dis(x):
     return dist_mat
 
 def feature_concat(*F_list, normal_col=False):
-   
+    """
+    Concatenate multiple modality feature. If the dimension of a feature matrix is more than two,
+    the function will reduce it into two dimension(using the last dimension as the feature dimension,
+    the other dimension will be fused as the object dimension)
+    :param F_list: Feature matrix list
+    :param normal_col: normalize each column of the feature
+    :return: Fused feature matrix
+    """
     features = None
     for f in F_list:
         if f is not None and type(f) != list:
@@ -143,14 +229,132 @@ def hyperedge_concat(*H_list):
                     H = tmp
     return H
 
+def generate_G_from_H(H, variable_weight=False):
+   
+    if type(H) != list:
+        
+        return _generate_G_from_H(H)
+        
+    else:
+        G = []
+        for sub_H in H:
+            G.append(generate_G_from_H(sub_H))
+        return G
+def _generate_G_from_H(H):  
+    H = np.array(H)
+    n_edge = H.shape[1]
+    W = np.ones(n_edge)
+    DV = np.sum(H * W, axis=1)
+    DE = np.sum(H, axis=0)
+    invDE = np.mat(np.diag(np.power(DE, -1)))
+    DV2 = np.mat(np.diag(np.power(DV, -0.5)))
+    DV1 = np.mat(np.diag(np.power(DV, -1)))
+    W = np.mat(np.diag(W))
+    H = np.mat(H)
+    HT = H.T
+    G= DV1 * H * W * invDE * HT 
+    return G
+
+def construct_H_with_KNN_from_distance(dis_mat, k_neig, is_probH=False, m_prob=1):
+ 
+    n_obj = dis_mat.shape[0]
+    n_edge = n_obj
+    H = np.zeros((n_obj, n_edge))
+    for center_idx in range(n_obj):
+        dis_mat[center_idx, center_idx] = 0
+        dis_vec = dis_mat[center_idx]
+        dis_vec=dis_vec.T
+        nearest_idx = np.array(np.argsort(dis_vec)).squeeze()
+        avg_dis = np.average(dis_vec)
+        if not np.any(nearest_idx[:k_neig] == center_idx):
+            nearest_idx[k_neig - 1] = center_idx
+
+        for node_idx in nearest_idx[:k_neig]:
+            if is_probH:
+                H[node_idx, center_idx] = np.exp(-dis_vec[0, node_idx] ** 2 / (m_prob * avg_dis) ** 2)
+            else:
+                H[node_idx, center_idx] = 1.0
+    return H
+
+def construct_H_with_KNN(X, K_neigs, split_diff_scale=False, is_probH=True, m_prob=1):
+
+    if len(X.shape) != 2:
+        X = X.reshape(-1, X.shape[-1])
+
+    if type(K_neigs) == int:
+        K_neigs = [K_neigs]
+    dis_mat = Eu_dis(X)
+
+    H = []
+    for k_neig in K_neigs:
+        H_tmp = construct_H_with_KNN_from_distance(dis_mat, k_neig, is_probH, m_prob)
+        if not split_diff_scale:
+            H = hyperedge_concat(H, H_tmp)
+        else:
+            H.append(H_tmp)
+    return H
+    
+def load_feature_construct_H(cnn_ft,
+        m_prob=1,
+        K_neigs=[8],
+        is_probH=True,
+        split_diff_scale=False, ):
+    mvcnn_ft = cnn_ft
+    fts = None
+    fts = feature_concat(fts, mvcnn_ft)
+    H = None
+    tmp = construct_H_with_KNN(fts, K_neigs=K_neigs,
+                               split_diff_scale=split_diff_scale,
+                               is_probH=is_probH, m_prob=m_prob)
+    H = hyperedge_concat(H, tmp)
+    return fts, H
 
 
+class HGNN_conv(nn.Module):
+    def __init__(self, in_ft, out_ft, bias=True):
+        super(HGNN_conv, self).__init__()
 
+        self.weight = Parameter(torch.Tensor(in_ft, out_ft))
+        if bias:
+            self.bias = Parameter(torch.Tensor(out_ft))
+        else:
+            self.register_parameter('bias', None)
+        self.reset_parameters()
 
+    def reset_parameters(self):
+        stdv = 1. / math.sqrt(self.weight.size(1))
+        self.weight.data.uniform_(-stdv, stdv)
+        if self.bias is not None:
+            self.bias.data.uniform_(-stdv, stdv)
 
+    def forward(self, x: torch.Tensor, G: torch.Tensor):
+        x = x.matmul(self.weight)
 
+        if self.bias is not None:
+            x = x + self.bias
+        x = G.matmul(x)
+        return x
 
-
+class HGNN(nn.Module):
+    def __init__(self, in_ch, n_class, n_hid, Q, dropout):
+        super(HGNN, self).__init__()
+        self.dropout = dropout
+        self.n_class = n_class
+        self.Q = Q
+        self.hgc1 = HGNN_conv(in_ch, n_hid)
+        self.hgc2 = HGNN_conv(n_hid, n_hid)
+        self.linear = nn.Linear(in_ch, n_class)
+    def forward(self, x, G):
+        x = self.hgc1(x, G)
+        x = F.relu(x)
+        x = F.dropout(x, self.dropout)
+        x = self.hgc2(x, G)
+        x = F.relu(x)
+        x = F.dropout(x, self.dropout)
+        x = torch.matmul(self.Q, x)
+        x = self.linear(x)
+        
+        return x
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 samples_type = ['ratio', 'same_num'][0]
@@ -375,5 +579,159 @@ for (FLAG, curr_train_ratio, Scale) in [(1, 0.05,150)]:
         # superpixel_scale = 200
         pass
     ###########
-   
+    superpixel_scale = Scale  #########################
+    m,n,d=data.shape
+    orig_data = data
+    height, width, bands = data.shape  # 原始高光谱数据的三个维度
+    print('data',data.shape)
+    data = np.reshape(data, [height * width, bands])
+    
+    
+    
+    
+    data = np.reshape(data, [height, width, bands])
+    data1 = np.reshape(data, [height * width, bands])
+    gt_reshape = np.reshape(gt, [-1])
+    
+    train_rand_idx = []
 
+
+
+    if samples_type == 'ratio':
+        for i in range(class_count):
+            idx = np.where(gt_reshape == i + 1)[-1]
+            samplesCount = len(idx)
+            rand_list = [i for i in range(samplesCount)]
+            train_sum = np.ceil(samplesCount * curr_train_ratio).astype('int32')
+            if (train_sum >50):
+                train_sum =50
+                rand_idx = random.sample(rand_list, train_sum)
+            #else:
+            rand_idx = random.sample(rand_list, train_sum)
+            rand_real_idx_per_class = idx[rand_idx]
+            train_num = len(rand_real_idx_per_class)
+            print('class:%d  sample_sum:%d  train_num:%d  test_num:%d' % (
+                i + 1, samplesCount, train_num, samplesCount - train_num))
+            train_rand_idx.append(rand_real_idx_per_class)
+        train_rand_idx = np.array(train_rand_idx)
+        train_data_index = []
+        for c in range(train_rand_idx.shape[0]):
+            a = train_rand_idx[c]
+            for j in range(a.shape[0]):
+                train_data_index.append(a[j])
+        train_data_index = np.array(train_data_index)
+
+        train_data_index = set(train_data_index)
+        all_data_index = [i for i in range(len(gt_reshape))]
+        all_data_index = set(all_data_index)
+
+        background_idx = np.where(gt_reshape == 0)[-1]
+        background_idx = set(background_idx)
+        test_data_index = all_data_index - train_data_index - background_idx
+        data_idx=all_data_index - background_idx
+        background_idx = list(background_idx)
+        data_idx = list(data_idx)
+        test_data_index = list(test_data_index)
+        train_data_index = list(train_data_index)
+
+    train_samples_gt = np.zeros(gt_reshape.shape)
+    for i in range(len(train_data_index)):
+        train_samples_gt[train_data_index[i]] = gt_reshape[train_data_index[i]]
+        pass
+
+ 
+    test_samples_gt = np.zeros(gt_reshape.shape)
+    for i in range(len(test_data_index)):
+        test_samples_gt[test_data_index[i]] = gt_reshape[test_data_index[i]]
+        pass
+    train_samples_gt = np.reshape(train_samples_gt, [height, width])
+    test_samples_gt = np.reshape(test_samples_gt, [height, width])
+
+    ls = LDA_SLIC(data, np.reshape(train_samples_gt, [height, width]), class_count-1)
+    tic0 = time.time()
+    Q, S, Seg = ls.simple_superpixel_LDA(scale=superpixel_scale)
+    Q = torch.from_numpy(Q).to(device)
+    idx_test = test_data_index
+    idx_test = np.array(idx_test)
+    idx_test = torch.from_numpy(idx_test).type(torch.long)
+    idx_train = train_data_index
+    idx_train = np.array(idx_train)
+    idx_train = torch.from_numpy(idx_train).type(torch.long)
+    background_idx = np.array(background_idx)
+    background_idx = torch.from_numpy(background_idx).type(torch.long)
+    data_idx = np.array(data_idx)
+    data_idx = torch.from_numpy(data_idx).type(torch.long)
+    train_num_all=len(idx_train)
+
+
+
+    fts, H = load_feature_construct_H(S,m_prob=1, K_neigs=[8], is_probH=True, split_diff_scale=False)
+    G = generate_G_from_H(H)
+    G = torch.Tensor(G).to(device)
+    fts = torch.Tensor(fts).to(device)
+    labels = torch.from_numpy(gt_reshape.astype('int32'))
+    labels=labels.long()
+    labels = labels - 1
+    labels1 = labels[idx_test].numpy()
+
+    torch.cuda.empty_cache()
+    for curr_seed in Seed_List:
+        lr = 0.001
+        nepochs=300
+        print(fts.shape)
+        print(G.shape)
+        model =HGNN(fts.shape[1],class_count,32,Q=Q,dropout=0)
+        model = model.to(device)
+       
+  
+        adam = torch.optim.Adam(model.parameters(), lr=lr)
+        optimizer =adam
+       
+        schedular =  torch.optim.lr_scheduler.MultiStepLR(optimizer,milestones=[100], gamma=0.9)
+        print("Model Summary:")
+        print(model)
+        print('----------------------')
+     
+        model.train()
+        criterion = torch.nn.CrossEntropyLoss()
+        for i in range(nepochs):
+            schedular.step()
+            model.train()
+            optimizer.zero_grad()
+            output= model(fts,G)
+            _, preds = torch.max(output[idx_train], 1)
+            loss = criterion(output[idx_train], labels[idx_train])
+            loss.backward()
+            optimizer.step()
+            with torch.no_grad():
+                model.eval()
+                OUTPUT = model(fts, G)
+                _, pred = torch.max(OUTPUT, 1)
+                preds=pred[idx_train]
+                trainloss = criterion(output[idx_train], labels[idx_train])
+                trainOA,_,_,_ =accuracy_eval1(labels[idx_train], preds)  
+                print("{}\tloss={}\t train OA={}".format(str(i + 1), trainloss, trainOA))
+                torch.save(model.state_dict(), "model\\best_model.pt")
+            torch.cuda.empty_cache()
+        
+        testOA,testAA,testKappa,testcm =accuracy_eval1(labels[idx_train], preds) 
+        cm1=np.diag(testcm)/testcm.sum(axis=0)#OA
+        file_name = 'classification'+dataset_name+'-150.txt'
+        with open(file_name, 'a') as x_file:
+            x_file.write('\n') 
+            #x_file.write('{}'.format(cm))
+            x_file.write('\n')
+            x_file.write('{} Overall accuracy (%)'.format(testOA*100))
+            x_file.write('\n')
+            x_file.write('{} Average accuracy (%)'.format(testAA*100))
+            x_file.write('\n')
+            x_file.write('{} Kappa accuracy (%)'.format(testKappa*100))
+            x_file.write('\n')      
+            x_file.write('\n')
+            x_file.write('{}'.format(cm1*100))
+        pred=pred+1
+        pred[background_idx]=0
+        y=DrawResult(pred,FLAG)
+        #plt.imsave('HGCN'+dataset_name+ repr(int(testOA*10000))+'.png', y)
+        torch.cuda.empty_cache()
+        del model
